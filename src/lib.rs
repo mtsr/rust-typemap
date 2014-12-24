@@ -1,3 +1,5 @@
+#![feature(default_type_params)]
+
 #![deny(missing_docs)]
 #![deny(warnings)]
 
@@ -8,11 +10,50 @@ extern crate "unsafe-any" as uany;
 use std::any::Any;
 use std::intrinsics::TypeId;
 use std::collections::{hash_map, HashMap};
+use std::hash::{Hash, Hasher, Writer};
+use std::mem::transmute;
 
 // These traits are faster when we know the type is correct already.
 use uany::{UncheckedAnyDowncast, UncheckedAnyMutDowncast, UncheckedBoxAnyDowncast};
 
 use Entry::{Occupied, Vacant};
+
+/// Custom Hasher that does noop on TypeId
+///
+/// Copied from https://github.com/chris-morgan/anymap/blob/master/src/lib.rs
+#[deriving(Default,Copy)]
+pub struct TypeIdHasher;
+
+/// State for Custom Hasher
+///
+/// Copied from https://github.com/chris-morgan/anymap/blob/master/src/lib.rs
+#[deriving(Copy)]
+pub struct TypeIdState {
+    value: u64,
+}
+
+impl Writer for TypeIdState {
+    #[inline(always)]
+    fn write(&mut self, bytes: &[u8]) {
+        // This expects to receive one and exactly one 64-bit value
+        debug_assert!(bytes.len() == 8);
+        unsafe {
+            std::ptr::copy_nonoverlapping_memory(&mut self.value,
+                                                 transmute(&bytes[0]),
+                                                 1)
+        }
+    }
+}
+
+impl Hasher<TypeIdState> for TypeIdHasher {
+    fn hash<Sized? T: Hash<TypeIdState>>(&self, value: &T) -> u64 {
+        let mut state = TypeIdState {
+            value: 0,
+        };
+        value.hash(&mut state);
+        state.value
+    }
+}
 
 /// A map keyed by types.
 ///
@@ -20,7 +61,7 @@ use Entry::{Occupied, Vacant};
 /// by the Assoc trait.
 #[deriving(Default)]
 pub struct TypeMap {
-    data: HashMap<TypeId, Box<Any + 'static>>
+    data: HashMap<TypeId, Box<Any + 'static>, TypeIdHasher>
 }
 
 /// This trait defines the relationship between keys and values in a TypeMap.
@@ -36,7 +77,7 @@ impl TypeMap {
     /// Create a new, empty TypeMap.
     pub fn new() -> TypeMap {
         TypeMap {
-            data: HashMap::new()
+            data: HashMap::with_hasher(TypeIdHasher),
         }
     }
 
@@ -100,10 +141,10 @@ impl TypeMap {
     }
 
     /// Read the underlying HashMap
-    pub unsafe fn data(&self) -> &HashMap<TypeId, Box<Any + 'static>> { &self.data }
+    pub unsafe fn data(&self) -> &HashMap<TypeId, Box<Any + 'static>, TypeIdHasher> { &self.data }
 
     /// Get a mutable reference to the underlying HashMap
-    pub unsafe fn data_mut(&mut self) -> &mut HashMap<TypeId, Box<Any + 'static>> { &mut self.data }
+    pub unsafe fn data_mut(&mut self) -> &mut HashMap<TypeId, Box<Any + 'static>, TypeIdHasher> { &mut self.data }
 
     /// Get the number of values stored in the map.
     pub fn len(&self) -> uint {
